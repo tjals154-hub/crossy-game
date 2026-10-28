@@ -1,0 +1,918 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>2D 무한 길 건너기 게임 (Crossy Chicken)</title>
+  <style>
+    /* 전체 화면 기본 스타일 및 중앙 정렬 */
+    body {
+      margin: 0;
+      padding: 15px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      background: linear-gradient(135deg, #e0f2fe 0%, #f1f5f9 100%);
+      font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      box-sizing: border-box;
+      user-select: none;
+    }
+
+    /* 게임 상단 헤더 */
+    .game-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      width: 450px;
+      margin-bottom: 8px;
+    }
+
+    h1 {
+      margin: 0;
+      color: #1e293b;
+      font-size: 22px;
+      font-weight: 800;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    /* 점수 배지 스타일 */
+    .score-container {
+      display: flex;
+      gap: 8px;
+    }
+
+    .score-badge {
+      background: #ffffff;
+      padding: 6px 12px;
+      border-radius: 20px;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+      font-size: 13px;
+      font-weight: 700;
+      color: #64748b;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .score-badge span {
+      color: #2563eb;
+      font-size: 15px;
+      font-weight: 800;
+    }
+
+    .score-badge.best span {
+      color: #ea580c;
+    }
+
+    /* 캔버스 스타일 (가로 9칸: 450px, 세로 12칸: 600px) */
+    #gameCanvas {
+      background-color: #ffffff;
+      border: 4px solid #1e293b;
+      border-radius: 12px;
+      box-shadow: 0 12px 28px rgba(30, 41, 59, 0.18);
+      display: block;
+    }
+
+    /* 조작 안내 키 UI */
+    .controls-info {
+      margin-top: 12px;
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+
+    .key-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 5px 12px;
+      background-color: #ffffff;
+      border: 1px solid #cbd5e1;
+      border-radius: 8px;
+      font-size: 12px;
+      font-weight: 700;
+      color: #475569;
+      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.04);
+    }
+  </style>
+</head>
+<body>
+
+  <!-- 게임 상단 헤더 -->
+  <div class="game-header">
+    <h1>🐔 Crossy Chicken</h1>
+    <div class="score-container">
+      <div class="score-badge">현재: <span id="currentScoreText">0</span></div>
+      <div class="score-badge best">최고: <span id="bestScoreText">0</span></div>
+    </div>
+  </div>
+
+  <!-- 캔버스: 가로 9칸(450px), 세로 12칸(600px) -->
+  <canvas id="gameCanvas" width="450" height="600"></canvas>
+
+  <!-- 하단 컨트롤 뱃지 -->
+  <div class="controls-info">
+    <span class="key-badge">⬆️ W / ↑ : 전진</span>
+    <span class="key-badge">⬇️ S / ↓ : 후퇴</span>
+    <span class="key-badge">⬅️ A / ← : 좌측</span>
+    <span class="key-badge">➡️ D / → : 우측</span>
+    <span class="key-badge">␣ Space : 시작 / 재시작</span>
+  </div>
+
+  <script>
+    // ==========================================
+    // 1. 게임 기본 상수 및 캔버스 설정
+    // ==========================================
+    const GRID_SIZE = 50; // 한 칸의 크기 (50px)
+    const COLS = 9;       // 가로 칸 수 (9칸 -> 450px)
+    const ROWS = 12;      // 세로 칸 수 (12칸 -> 600px)
+
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+
+    const currentScoreEl = document.getElementById('currentScoreText');
+    const bestScoreEl = document.getElementById('bestScoreText');
+
+    // 게임 상태 머신: 'START' | 'PLAYING' | 'GAMEOVER'
+    let gameState = 'START';
+    let gameOverReason = '';
+    let currentScore = 0;
+    let bestScore = parseInt(localStorage.getItem('crossy_chicken_best') || '0', 10);
+    bestScoreEl.textContent = bestScore;
+
+    // 카메라 위치 (부드러운 스크롤을 위한 값)
+    let cameraRow = 0;
+
+    // ==========================================
+    // 2. Web Audio API 사운드 시스템 (외부 파일 없음)
+    // ==========================================
+    let audioCtx = null;
+
+    function getAudioContext() {
+      if (!audioCtx) {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      }
+      if (audioCtx.state === 'suspended') {
+        audioCtx.resume();
+      }
+      return audioCtx;
+    }
+
+    /** 이동(점프) 효과음: 통통 튀는 경쾌한 팝 사운드 */
+    function playHopSound() {
+      try {
+        const actx = getAudioContext();
+        const osc = actx.createOscillator();
+        const gain = actx.createGain();
+        const now = actx.currentTime;
+
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(320, now);
+        osc.frequency.exponentialRampToValueAtTime(580, now + 0.08);
+
+        gain.gain.setValueAtTime(0.16, now);
+        gain.gain.exponentialRampToValueAtTime(0.01, now + 0.08);
+
+        osc.connect(gain);
+        gain.connect(actx.destination);
+
+        osc.start(now);
+        osc.stop(now + 0.09);
+      } catch (e) {}
+    }
+
+    /** 게임 오버 효과음: 묵직하게 떨어지는 사운드 */
+    function playGameOverSound() {
+      try {
+        const actx = getAudioContext();
+        const osc = actx.createOscillator();
+        const gain = actx.createGain();
+        const now = actx.currentTime;
+
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(200, now);
+        osc.frequency.exponentialRampToValueAtTime(45, now + 0.35);
+
+        gain.gain.setValueAtTime(0.22, now);
+        gain.gain.exponentialRampToValueAtTime(0.01, now + 0.35);
+
+        osc.connect(gain);
+        gain.connect(actx.destination);
+
+        osc.start(now);
+        osc.stop(now + 0.36);
+      } catch (e) {}
+    }
+
+    /** 게임 시작 사운드: 밝은 3화음 아르페지오 */
+    function playStartSound() {
+      try {
+        const actx = getAudioContext();
+        const now = actx.currentTime;
+        const notes = [440, 554, 659];
+        notes.forEach((freq, idx) => {
+          const osc = actx.createOscillator();
+          const gain = actx.createGain();
+          osc.type = 'triangle';
+          osc.frequency.setValueAtTime(freq, now + idx * 0.07);
+          gain.gain.setValueAtTime(0.14, now + idx * 0.07);
+          gain.gain.exponentialRampToValueAtTime(0.01, now + idx * 0.07 + 0.14);
+          osc.connect(gain);
+          gain.connect(actx.destination);
+          osc.start(now + idx * 0.07);
+          osc.stop(now + idx * 0.07 + 0.15);
+        });
+      } catch (e) {}
+    }
+
+    // ==========================================
+    // 3. 플레이어 캐릭터 객체 (점프 애니메이션 지원)
+    // ==========================================
+    const player = {
+      row: 0,
+      x: Math.floor(COLS / 2) * GRID_SIZE + GRID_SIZE / 2,
+      emoji: '🐔',
+
+      // 점프 모션 애니메이션 변수
+      jumpProgress: 1, // 0에서 1로 진행 (1이면 착지 상태)
+      jumpHeight: 14,  // 튀어오르는 높이(px)
+
+      reset() {
+        this.row = 0;
+        this.x = Math.floor(COLS / 2) * GRID_SIZE + GRID_SIZE / 2;
+        this.jumpProgress = 1;
+      },
+
+      startJump() {
+        this.jumpProgress = 0;
+      },
+
+      update() {
+        if (this.jumpProgress < 1) {
+          this.jumpProgress += 0.16;
+          if (this.jumpProgress > 1) this.jumpProgress = 1;
+        }
+      }
+    };
+
+    // ==========================================
+    // 4. 무한 줄(Lane) 동적 생성 및 관리
+    // ==========================================
+    const lanes = new Map();
+    let highestGeneratedRow = -1;
+
+    function createLane(r) {
+      // 시작 지점 주변(r <= 0)은 안전한 잔디밭
+      if (r <= 0) {
+        const trees = [];
+        if (r < 0) {
+          const count = Math.floor(Math.random() * 2) + 1;
+          while (trees.length < count) {
+            const c = Math.floor(Math.random() * COLS);
+            if (!trees.includes(c)) trees.push(c);
+          }
+        }
+        return { row: r, type: 'grass', trees: trees, flowers: [1, 7] };
+      }
+
+      // r > 0 부터는 이전 줄을 고려하여 균형 있게 랜덤 생성
+      const prevLane = lanes.get(r - 1);
+      const prevType = prevLane ? prevLane.type : 'grass';
+
+      let type = 'grass';
+      const rand = Math.random();
+
+      if (prevType === 'road') {
+        type = rand < 0.6 ? 'road' : (rand < 0.85 ? 'grass' : 'water');
+      } else if (prevType === 'water') {
+        type = rand < 0.55 ? 'water' : (rand < 0.85 ? 'grass' : 'road');
+      } else {
+        type = rand < 0.45 ? 'road' : (rand < 0.8 ? 'water' : 'grass');
+      }
+
+      // 1) 잔디밭 줄
+      if (type === 'grass') {
+        const trees = [];
+        const treeCount = Math.floor(Math.random() * 3) + 1; // 1~3그루 (길 차단 방지)
+        while (trees.length < treeCount) {
+          const col = Math.floor(Math.random() * COLS);
+          if (!trees.includes(col)) trees.push(col);
+        }
+        // 아기자기한 꽃 장식 컬럼
+        const flowers = [];
+        for (let c = 0; c < COLS; c++) {
+          if (!trees.includes(c) && Math.random() < 0.2) flowers.push(c);
+        }
+        return { row: r, type: 'grass', trees, flowers };
+      }
+
+      // 2) 도로 줄
+      if (type === 'road') {
+        const direction = Math.random() < 0.5 ? 1 : -1;
+        const baseSpeed = 1.6 + Math.random() * 1.8;
+        const spacing = 220 + Math.random() * 80;
+        const cars = [];
+        for (let i = 0; i < 2; i++) {
+          cars.push({
+            x: i * spacing + Math.random() * 40,
+            emoji: '🚗'
+          });
+        }
+        return { row: r, type: 'road', direction, baseSpeed, spacing, cars };
+      }
+
+      // 3) 강 줄
+      if (type === 'water') {
+        const direction = Math.random() < 0.5 ? 1 : -1;
+        const speed = 1.3 + Math.random() * 1.4;
+        const width = 115 + Math.random() * 40;
+        const spacing = 230 + Math.random() * 60;
+        const logs = [];
+        for (let i = 0; i < 2; i++) {
+          logs.push({
+            x: i * spacing + 20,
+            width: width,
+            height: 34
+          });
+        }
+        return { row: r, type: 'water', direction, speed, spacing, logs };
+      }
+    }
+
+    /** 플레이어 전방 줄 생성 및 후방 오래된 줄 정리 */
+    function updateLanes() {
+      const targetMaxRow = player.row + 16;
+      while (highestGeneratedRow < targetMaxRow) {
+        highestGeneratedRow++;
+        lanes.set(highestGeneratedRow, createLane(highestGeneratedRow));
+      }
+
+      const minRowToKeep = player.row - 6;
+      for (let r of lanes.keys()) {
+        if (r < minRowToKeep) {
+          lanes.delete(r);
+        }
+      }
+    }
+
+    // ==========================================
+    // 5. 화면 좌표 변환
+    // ==========================================
+    const SCREEN_OFFSET_Y = canvas.height - 3 * GRID_SIZE;
+
+    function rowToScreenY(r) {
+      return SCREEN_OFFSET_Y - (r - cameraRow) * GRID_SIZE;
+    }
+
+    // ==========================================
+    // 6. 비주얼 렌더링 함수들 (고급 스타일 적용)
+    // ==========================================
+
+    /** 지형 배경(잔디, 도로, 강, 꽃, 나무) 그리기 */
+    function drawLanes() {
+      lanes.forEach(lane => {
+        const screenY = rowToScreenY(lane.row);
+        if (screenY + GRID_SIZE < 0 || screenY > canvas.height) return;
+
+        // --- 잔디 줄 렌더링 ---
+        if (lane.type === 'grass') {
+          // 격자 체커보드 패턴으로 고급스러운 잔디 연출
+          for (let c = 0; c < COLS; c++) {
+            ctx.fillStyle = ((lane.row + c) % 2 === 0) ? '#6ab04c' : '#74b856';
+            ctx.fillRect(c * GRID_SIZE, screenY, GRID_SIZE, GRID_SIZE);
+          }
+
+          // 잔디 상단 하이라이트
+          ctx.fillStyle = 'rgba(255, 255, 255, 0.12)';
+          ctx.fillRect(0, screenY, canvas.width, 3);
+
+          // 작은 꽃 장식
+          if (lane.flowers) {
+            ctx.font = '14px sans-serif';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            lane.flowers.forEach(c => {
+              ctx.fillText('🌼', c * GRID_SIZE + GRID_SIZE / 2, screenY + GRID_SIZE / 2 + 8);
+            });
+          }
+
+          // 나무(🌲) 렌더링 + 부드러운 타원 그림자
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          lane.trees.forEach(col => {
+            const treeX = col * GRID_SIZE + GRID_SIZE / 2;
+            const treeY = screenY + GRID_SIZE / 2;
+
+            // 나무 바닥 그림자
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.2)';
+            ctx.beginPath();
+            ctx.ellipse(treeX, treeY + 16, 16, 7, 0, 0, Math.PI * 2);
+            ctx.fill();
+
+            // 나무 이모지
+            ctx.font = '34px "Segoe UI Emoji", "Apple Color Emoji", sans-serif';
+            ctx.fillText('🌲', treeX, treeY - 2);
+          });
+        }
+
+        // --- 도로 줄 렌더링 ---
+        else if (lane.type === 'road') {
+          // 다크 슬레이트 아스팔트
+          ctx.fillStyle = '#374151';
+          ctx.fillRect(0, screenY, canvas.width, GRID_SIZE);
+
+          // 도로 상/하단 연석(Curb) 느낌
+          ctx.fillStyle = '#1f2937';
+          ctx.fillRect(0, screenY, canvas.width, 2);
+          ctx.fillRect(0, screenY + GRID_SIZE - 2, canvas.width, 2);
+
+          // 노란색 차선 점선
+          ctx.strokeStyle = '#facc15';
+          ctx.lineWidth = 3;
+          ctx.setLineDash([16, 14]);
+          ctx.beginPath();
+          ctx.moveTo(0, screenY + GRID_SIZE / 2);
+          ctx.lineTo(canvas.width, screenY + GRID_SIZE / 2);
+          ctx.stroke();
+          ctx.setLineDash([]);
+        }
+
+        // --- 강 줄 렌더링 ---
+        else if (lane.type === 'water') {
+          // 깊이감 있는 에메랄드 블루
+          ctx.fillStyle = '#0284c7';
+          ctx.fillRect(0, screenY, canvas.width, GRID_SIZE);
+
+          // 잔잔한 물결 애니메이션 효과
+          const waveOffset = (Date.now() / 30) % 60;
+          ctx.strokeStyle = 'rgba(255, 255, 255, 0.22)';
+          ctx.lineWidth = 2;
+          ctx.setLineDash([14, 18]);
+          ctx.beginPath();
+          ctx.moveTo(-waveOffset, screenY + 14);
+          ctx.lineTo(canvas.width + 60, screenY + 14);
+          ctx.moveTo(waveOffset - 60, screenY + 36);
+          ctx.lineTo(canvas.width + 60, screenY + 36);
+          ctx.stroke();
+          ctx.setLineDash([]);
+        }
+      });
+    }
+
+    /** 통나무 렌더링 (라운드 모서리 + 디테일 나뭇결) */
+    function updateAndDrawLogs() {
+      lanes.forEach(lane => {
+        if (lane.type !== 'water') return;
+
+        const screenY = rowToScreenY(lane.row);
+        if (screenY + GRID_SIZE < 0 || screenY > canvas.height) return;
+
+        lane.logs.forEach(log => {
+          if (gameState === 'PLAYING') {
+            log.x += lane.speed * lane.direction;
+
+            if (lane.direction === 1 && log.x > canvas.width) {
+              log.x = -log.width;
+            } else if (lane.direction === -1 && log.x + log.width < 0) {
+              log.x = canvas.width;
+            }
+          }
+
+          const logY = screenY + (GRID_SIZE - log.height) / 2;
+
+          // 통나무 바닥 그림자
+          ctx.fillStyle = 'rgba(0, 0, 0, 0.18)';
+          ctx.beginPath();
+          ctx.roundRect(log.x + 2, logY + 4, log.width, log.height, 10);
+          ctx.fill();
+
+          // 통나무 몸체 (따뜻한 갈색)
+          ctx.fillStyle = '#854d0e';
+          ctx.beginPath();
+          ctx.roundRect(log.x, logY, log.width, log.height, 10);
+          ctx.fill();
+
+          // 통나무 테두리
+          ctx.strokeStyle = '#543209';
+          ctx.lineWidth = 2;
+          ctx.stroke();
+
+          // 나뭇결 하이라이트 줄무늬
+          ctx.fillStyle = '#a16207';
+          ctx.beginPath();
+          ctx.roundRect(log.x + 8, logY + 6, log.width - 16, 4, 2);
+          ctx.roundRect(log.x + 14, logY + 15, log.width - 28, 3, 2);
+          ctx.roundRect(log.x + 8, logY + 23, log.width - 18, 4, 2);
+          ctx.fill();
+
+          // 통나무 양 끝 나이테 원형 단면
+          ctx.fillStyle = '#ca8a04';
+          ctx.beginPath();
+          ctx.ellipse(log.x + 6, logY + log.height / 2, 4, 10, 0, 0, Math.PI * 2);
+          ctx.ellipse(log.x + log.width - 6, logY + log.height / 2, 4, 10, 0, 0, Math.PI * 2);
+          ctx.fill();
+        });
+      });
+    }
+
+    /** 자동차 렌더링 (점수 비례 속도 증가 + 진행방향 맞춤 반전) */
+    function updateAndDrawCars() {
+      // 점수가 올라갈수록 자동차 속도 증가 계수 (100점 도달 시 약 2배까지 점진 증가)
+      const speedMultiplier = 1 + Math.min(currentScore, 100) * 0.012;
+
+      ctx.font = '35px "Segoe UI Emoji", "Apple Color Emoji", sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+
+      lanes.forEach(lane => {
+        if (lane.type !== 'road') return;
+
+        const screenY = rowToScreenY(lane.row);
+        if (screenY + GRID_SIZE < 0 || screenY > canvas.height) return;
+
+        const centerY = screenY + GRID_SIZE / 2;
+
+        lane.cars.forEach(car => {
+          if (gameState === 'PLAYING') {
+            car.x += lane.baseSpeed * speedMultiplier * lane.direction;
+
+            const buffer = 50;
+            if (lane.direction === 1 && car.x > canvas.width + buffer) {
+              car.x = -buffer;
+            } else if (lane.direction === -1 && car.x < -buffer) {
+              car.x = canvas.width + buffer;
+            }
+          }
+
+          // 자동차 바닥 그림자
+          ctx.fillStyle = 'rgba(0, 0, 0, 0.28)';
+          ctx.beginPath();
+          ctx.ellipse(car.x, centerY + 14, 19, 7, 0, 0, Math.PI * 2);
+          ctx.fill();
+
+          // 자동차 본체 렌더링
+          ctx.save();
+          ctx.translate(car.x, centerY);
+
+          // 오른쪽으로 달리는 차만 좌우 반전하여 앞머리가 오른쪽을 향하게 함
+          if (lane.direction === 1) {
+            ctx.scale(-1, 1);
+          }
+
+          ctx.fillText(car.emoji, 0, 0);
+          ctx.restore();
+        });
+      });
+    }
+
+    /** 플레이어 캐릭터 렌더링 (통통 튀는 점프 애니메이션 + 동적 그림자) */
+    function drawPlayer() {
+      player.update();
+
+      const baseScreenY = rowToScreenY(player.row) + GRID_SIZE / 2;
+
+      // 점프 시 포물선 곡선 (sin)으로 튀어오름
+      const jumpOffset = Math.sin(player.jumpProgress * Math.PI) * player.jumpHeight;
+      const currentY = baseScreenY - jumpOffset;
+
+      // 점프 높이에 따라 그림자 크기와 투명도가 변함
+      const shadowScale = 1 - (jumpOffset / player.jumpHeight) * 0.35;
+      ctx.fillStyle = `rgba(0, 0, 0, ${0.28 * shadowScale})`;
+      ctx.beginPath();
+      ctx.ellipse(player.x, baseScreenY + 15, 15 * shadowScale, 7 * shadowScale, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      // 닭 이모지 렌더링
+      ctx.font = '38px "Segoe UI Emoji", "Apple Color Emoji", sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(player.emoji, player.x, currentY);
+    }
+
+    // ==========================================
+    // 7. 충돌 판정 및 상호작용
+    // ==========================================
+    function handlePlayerInteractions() {
+      if (gameState !== 'PLAYING') return;
+
+      const currentLane = lanes.get(player.row);
+      if (!currentLane) return;
+
+      // 1) 자동차 충돌 판정
+      if (currentLane.type === 'road') {
+        const collisionDistance = 34;
+        for (let car of currentLane.cars) {
+          if (Math.abs(car.x - player.x) < collisionDistance) {
+            triggerGameOver('🚗 앗! 자동차에 부딪혔습니다!');
+            return;
+          }
+        }
+      }
+
+      // 2) 강 줄 위의 통나무 탑승 & 물 빠짐 판정
+      else if (currentLane.type === 'water') {
+        let onLog = false;
+        let standingLog = null;
+
+        for (let log of currentLane.logs) {
+          if (player.x >= log.x - 6 && player.x <= log.x + log.width + 6) {
+            onLog = true;
+            standingLog = log;
+            break;
+          }
+        }
+
+        if (onLog && standingLog) {
+          player.x += currentLane.speed * currentLane.direction;
+
+          // 화면 밖으로 밀려남
+          if (player.x < 0 || player.x > canvas.width) {
+            triggerGameOver('🌊 통나무를 타고 화면 밖으로 떠내려갔습니다!');
+            return;
+          }
+        } else {
+          triggerGameOver('🌊 첨벙! 차가운 강물에 빠졌습니다!');
+          return;
+        }
+      }
+
+      // 3) 카메라 뒤처짐 체크
+      const playerScreenY = rowToScreenY(player.row);
+      if (playerScreenY > canvas.height + 10) {
+        triggerGameOver('⏰ 너무 뒤처져서 길을 잃었습니다!');
+      }
+    }
+
+    function triggerGameOver(reason) {
+      gameState = 'GAMEOVER';
+      gameOverReason = reason;
+      playGameOverSound();
+    }
+
+    // ==========================================
+    // 8. 점수 시스템 및 HUD 렌더링
+    // ==========================================
+    function updateScore() {
+      if (player.row > currentScore) {
+        currentScore = player.row;
+        currentScoreEl.textContent = currentScore;
+
+        if (currentScore > bestScore) {
+          bestScore = currentScore;
+          bestScoreEl.textContent = bestScore;
+          localStorage.setItem('crossy_chicken_best', bestScore);
+        }
+      }
+    }
+
+    /** 인게임 좌측 상단 HUD */
+    function drawScoreHUD() {
+      ctx.save();
+      // 글래스모피즘 반투명 카드
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.7)';
+      ctx.beginPath();
+      ctx.roundRect(12, 12, 135, 54, 10);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+
+      ctx.fillStyle = '#ffffff';
+      ctx.font = 'bold 15px sans-serif';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'top';
+      ctx.fillText(`🚩 점수: ${currentScore}`, 22, 19);
+
+      ctx.fillStyle = '#f59e0b';
+      ctx.font = 'bold 13px sans-serif';
+      ctx.fillText(`🏆 최고: ${bestScore}`, 22, 40);
+      ctx.restore();
+    }
+
+    // ==========================================
+    // 9. 시작 화면 및 게임오버 화면 렌더링
+    // ==========================================
+
+    /** 시작 화면 렌더링 */
+    function drawStartScreen() {
+      // 반투명 어두운 오버레이
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.75)';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      ctx.save();
+      ctx.textAlign = 'center';
+
+      // 상단 메인 이모지
+      ctx.font = '64px sans-serif';
+      ctx.fillText('🐔', canvas.width / 2, canvas.height / 2 - 110);
+
+      // 메인 타이틀
+      ctx.fillStyle = '#ffffff';
+      ctx.font = 'bold 36px sans-serif';
+      ctx.fillText('CROSSY CHICKEN', canvas.width / 2, canvas.height / 2 - 40);
+
+      ctx.fillStyle = '#38bdf8';
+      ctx.font = 'bold 18px sans-serif';
+      ctx.fillText('무한 길 건너기 모험', canvas.width / 2, canvas.height / 2 - 5);
+
+      // 깜빡이는 스페이스바 안내 (펄스 효과)
+      const alpha = 0.6 + 0.4 * Math.sin(Date.now() / 250);
+      ctx.fillStyle = `rgba(255, 255, 255, ${alpha})`;
+      ctx.font = 'bold 20px sans-serif';
+      ctx.fillText('[ 스페이스바를 눌러 시작 ]', canvas.width / 2, canvas.height / 2 + 70);
+
+      // 조작 가이드
+      ctx.fillStyle = '#94a3b8';
+      ctx.font = '14px sans-serif';
+      ctx.fillText('WASD 또는 방향키로 닭을 조작하세요', canvas.width / 2, canvas.height / 2 + 115);
+
+      ctx.restore();
+    }
+
+    /** 게임 오버 화면 렌더링 */
+    function drawGameOverScreen() {
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.82)';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      ctx.save();
+      ctx.textAlign = 'center';
+
+      ctx.fillStyle = '#ef4444';
+      ctx.font = 'bold 44px sans-serif';
+      ctx.fillText('GAME OVER', canvas.width / 2, canvas.height / 2 - 60);
+
+      ctx.fillStyle = '#fbbf24';
+      ctx.font = 'bold 17px sans-serif';
+      ctx.fillText(gameOverReason, canvas.width / 2, canvas.height / 2 - 10);
+
+      ctx.fillStyle = '#ffffff';
+      ctx.font = 'bold 22px sans-serif';
+      ctx.fillText(`도달 거리: ${currentScore} 걸음`, canvas.width / 2, canvas.height / 2 + 35);
+
+      // 재시작 안내
+      const alpha = 0.6 + 0.4 * Math.sin(Date.now() / 250);
+      ctx.fillStyle = `rgba(255, 255, 255, ${alpha})`;
+      ctx.font = 'bold 17px sans-serif';
+      ctx.fillText('[ 스페이스바를 눌러 다시 도전 ]', canvas.width / 2, canvas.height / 2 + 85);
+
+      ctx.restore();
+    }
+
+    /** 게임 초기화 */
+    function resetGame() {
+      player.reset();
+      cameraRow = 0;
+      currentScore = 0;
+      currentScoreEl.textContent = '0';
+      gameOverReason = '';
+
+      lanes.clear();
+      highestGeneratedRow = -4;
+      for (let r = -3; r <= 15; r++) {
+        lanes.set(r, createLane(r));
+        highestGeneratedRow = r;
+      }
+    }
+
+    function startGame() {
+      resetGame();
+      gameState = 'PLAYING';
+      playStartSound();
+    }
+
+    // ==========================================
+    // 10. 메인 게임 루프
+    // ==========================================
+    function gameLoop() {
+      // 1) 게임 진행 중일 때 줄 생성 및 카메라 추적
+      if (gameState === 'PLAYING') {
+        updateLanes();
+        cameraRow += (player.row - cameraRow) * 0.12;
+      }
+
+      // 2) 화면 초기화
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      // 3) 배경 및 오브젝트 렌더링
+      drawLanes();
+      updateAndDrawLogs();
+      updateAndDrawCars();
+
+      if (gameState === 'PLAYING') {
+        handlePlayerInteractions();
+      }
+
+      drawPlayer();
+
+      // 4) 상태별 오버레이 렌더링
+      if (gameState === 'PLAYING') {
+        updateScore();
+        drawScoreHUD();
+      } else if (gameState === 'START') {
+        drawStartScreen();
+      } else if (gameState === 'GAMEOVER') {
+        drawGameOverScreen();
+      }
+
+      requestAnimationFrame(gameLoop);
+    }
+
+    // ==========================================
+    // 11. 키보드 입력 핸들러
+    // ==========================================
+    window.addEventListener('keydown', (event) => {
+      const controlledKeys = [
+        'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
+        'KeyW', 'KeyS', 'KeyA', 'KeyD', 'Space',
+        'w', 'W', 's', 'S', 'a', 'A', 'd', 'D', ' '
+      ];
+
+      if (controlledKeys.includes(event.key) || controlledKeys.includes(event.code)) {
+        event.preventDefault();
+      }
+
+      // 시작 화면 상태: 스페이스바로 시작
+      if (gameState === 'START') {
+        if (event.code === 'Space' || event.key === ' ') {
+          startGame();
+        }
+        return;
+      }
+
+      // 게임 오버 상태: 스페이스바로 재시작
+      if (gameState === 'GAMEOVER') {
+        if (event.code === 'Space' || event.key === ' ') {
+          startGame();
+        }
+        return;
+      }
+
+      // 게임 플레이 중 이동 조작
+      let nextRow = player.row;
+      let nextX = player.x;
+
+      switch (event.key) {
+        case 'ArrowUp':
+        case 'w':
+        case 'W':
+          nextRow += 1;
+          break;
+
+        case 'ArrowDown':
+        case 's':
+        case 'S':
+          nextRow -= 1;
+          break;
+
+        case 'ArrowLeft':
+        case 'a':
+        case 'A':
+          nextX -= GRID_SIZE;
+          break;
+
+        case 'ArrowRight':
+        case 'd':
+        case 'D':
+          nextX += GRID_SIZE;
+          break;
+      }
+
+      // 화면 좌우 경계 검사
+      const minX = GRID_SIZE / 2;
+      const maxX = canvas.width - GRID_SIZE / 2;
+      if (nextX < minX || nextX > maxX) {
+        return;
+      }
+
+      // 나무(🌲) 장애물 충돌 검사
+      const targetCol = Math.floor(nextX / GRID_SIZE);
+      const targetLane = lanes.get(nextRow);
+      if (targetLane && targetLane.type === 'grass' && targetLane.trees) {
+        if (targetLane.trees.includes(targetCol)) {
+          return; // 나무에 막힘
+        }
+      }
+
+      // 이동 성공: 점프 애니메이션 및 효과음 재생
+      if (player.row !== nextRow || player.x !== nextX) {
+        player.row = nextRow;
+        player.x = nextX;
+        player.startJump();
+        playHopSound();
+      }
+    });
+
+    // ==========================================
+    // 12. 초기 실행
+    // ==========================================
+    resetGame();
+    requestAnimationFrame(gameLoop);
+  </script>
+</body>
+</html>
+
